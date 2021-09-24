@@ -3,12 +3,14 @@ A collection of convenience functions for the preparation and conversion of [`Ne
 graphs to and from `cityseer` data structures. Note that the `cityseer` network data structures can be created and
 manipulated directly, if so desired.
 """
+from __future__ import annotations
 
 import json
 import logging
 from collections import namedtuple
 from typing import Union, Tuple, Optional
 
+import geopandas as gpd
 import networkx as nx
 import numpy as np
 import utm
@@ -154,26 +156,15 @@ def _weld_linestring_coords(linestring_coords_a: Union[list, tuple, np.ndarray, 
     return coords_a[:-1] + coords_b
 
 
-class NodeWrapper:
+class CityseerNode:
+
+    _geom: geometry.Point
+    live: bool
 
     def __init__(self,
-                 uid: Union[str, tuple[str, ...]],
                  geom: geometry.Point,
-                 live: bool):
-        if isinstance(uid, str):
-            self._uid = uid
-        elif isinstance(uid, tuple) and len(uid) == 1:
-            self._uid = uid[0]
-        elif isinstance(uid, tuple) and all(map(lambda i: isinstance(i, str), uid)):
-            uids = []
-            for u in uid:
-                u = str(u)
-                if len(u) > 10:
-                    u = f'{u[:5]}|{u[-5:]}'
-                uids.append(u)
-            self._uid = '±'.join(uids)
-        else:
-            raise TypeError('Requires a "uid" parameter consisting of a "str" type or tuple of "str".')
+                 live: bool = True):
+        """ UID is generated from geom WKB """
         self.geom = geom
         if not isinstance(live, bool):
             raise TypeError('Requires a "live" parameter of type "bool".')
@@ -181,23 +172,17 @@ class NodeWrapper:
 
     @property
     def uid(self):
-        return self._uid
-
-    @uid.setter
-    def uid(self, new_uid: str):
-        if not isinstance(new_uid, str):
-            raise TypeError('Requires a "uid" parameter consisting of a "str" type or tuple of "str".')
-        self._uid = new_uid
+        return self._geom.wkb_hex
 
     @property
     def geom(self):
-        return wkb.loads(self._geom_wkb)
+        return self._geom
 
     @geom.setter
-    def geom(self, new_geom: geometry.Point):
-        if not isinstance(new_geom, geometry.Point):
+    def geom(self, geom: geometry.Point):
+        if not isinstance(geom, geometry.Point):
             raise TypeError('Requires a "geom" parameter of shapely Point type.')
-        self._geom_wkb = new_geom.wkb
+        self._geom = geom
 
     @property
     def x(self):
@@ -216,41 +201,32 @@ class NodeWrapper:
         return self.uid
 
     def __eq__(self, other):
-        if isinstance(other, NodeWrapper):
+        if isinstance(other, CityseerNode):
             return self.uid == other.uid
         return False
 
     def __hash__(self):
         return hash(self.__repr__)
 
-    def bump_node_uid(self, network: nx.MultiGraph):
-        origin_uid = self.uid
-        append = 2
-        while True:
-            if self.uid not in network:
-                return
-            self.uid = f'{origin_uid}§v{append}'
-            append += 1
 
-    def persist_node_data(self, network):
+class CityseerEdge:
 
-def wrap_node(graph: nx.MultiGraph, uid: str):
-    return NodeWrapper(uid=uid, **graph.nodes[uid])
-
-
-class EdgeWrapper:
+    start_node: CityseerNode
+    end_node: CityseerNode
+    key_idx: int
+    _geom: geometry.LineString
 
     def __init__(self,
-                 start_uid: str,
-                 end_uid: str,
+                 start_node: CityseerNode,
+                 end_node: CityseerNode,
                  key_idx: int,
                  geom: geometry.LineString):
-        if not isinstance(start_uid, str):
+        if not isinstance(start_node, CityseerNode):
             raise TypeError('Requires a "start_uid" parameter of type "str".')
-        self.start_uid = start_uid
-        if not isinstance(end_uid, str):
+        self.start_node = start_node
+        if not isinstance(end_node, CityseerNode):
             raise TypeError('Requires a "end_uid" parameter of type "str".')
-        self.end_uid = end_uid
+        self.end_node = end_node
         if not isinstance(key_idx, int):
             raise TypeError('Requires a "key_idx" parameter of type "int".')
         self.key_idx = key_idx
@@ -258,82 +234,54 @@ class EdgeWrapper:
 
     @property
     def geom(self):
-        return wkb.loads(self._geom_wkb)
+        return self._geom
 
     @geom.setter
-    def geom(self, new_geom: geometry.LineString):
-        if not isinstance(new_geom, geometry.LineString):
+    def geom(self, geom: geometry.LineString):
+        if not isinstance(geom, geometry.LineString):
             raise TypeError('Requires a "geom" parameter of type shapely LineString.')
-        self._geom_wkb = new_geom.wkb
+        self._geom = geom
 
     def __repr__(self):
-        return f'{self.start_uid} - {self.end_uid} - {self.key_idx}.'
+        return f'{self.start_node.uid} - {self.end_node.uid} - {self.key_idx}.'
 
     def __eq__(self, other):
-        if isinstance(other, EdgeWrapper):
-            return self.start_uid == other.start_uid \
-                   and self.end_uid == other.end_uid \
+        if isinstance(other, CityseerEdge):
+            return self.start_node.uid == other.start_node.uid \
+                   and self.end_node.uid == other.end_node.uid \
                    and self.key_idx == other.key_idx
         return False
 
     def __hash__(self):
         return hash(self.__repr__)
 
-    def snap_edge(self,
-                  graph: nx.MultiGraph,
-                  tolerance: int):
-        start_node = wrap_node(graph=graph, uid=self.start_uid)
-        end_node = wrap_node(graph=graph, uid=self.end_uid)
+    def snap_endpoints(self,
+                       tolerance: int):
         line_coords = _align_linestring_coords(self.geom.coords,
-                                               xy=start_node.xy,
+                                               xy=self.start_node.xy,
                                                reverse=False,
                                                tolerance=tolerance)
-        line_coords = _snap_linestring_startpoint(line_coords, start_node.xy)
-        line_coords = _snap_linestring_endpoint(line_coords, end_node.xy)
+        line_coords = _snap_linestring_startpoint(line_coords, self.start_node.xy)
+        line_coords = _snap_linestring_endpoint(line_coords, self.end_node.xy)
         self.geom = geometry.LineString(line_coords)
 
 
-class CityseerGraph(nx.MultiGraph):
+class Cityseer():
 
-    def add_node(self, node_for_adding: str, **attr):
-        """Overrides add_node with steps enforcing node semantics"""
-        try:
-            node = NodeWrapper(uid=node_for_adding, **attr)
-            nx.MultiGraph.add_node(self,
-                                   node.uid,
-                                   geom=node.geom,
-                                   live=node.live,
-                                   **attr)
-        except Exception as e:
-            logger.error('Unable to generate node from provided parameters.'
-                         'You may wish to use "add_cityseer_node" instead.')
-            raise e
+    def __init__(self, crs: str = None):
+        self.graph = nx.MultiGraph()
+        self.node_gdf = gpd.GeoDataFrame(geometry='geom', crs=crs)
+        self.edge_gdf = gpd.GeoDataFrame(geometry='geom', crs=crs)
 
-    def add_cityseer_node(self,
-                          uid: Union[str, tuple],
-                          geom: geometry.Point,
-                          live: bool = True,
-                          **attr):
-        if not isinstance(uid, (str, tuple)):
-            raise TypeError('Node "uids" must be of type "str" or a tuple of "str".')
-        if not isinstance(geom, geometry.Point):
-            raise TypeError('A shapely "Point" geometry is required for the "geom" parameter.')
+    def add_node(self,
+                 uid: Union[str, tuple],
+                 geom: geometry.Point,
+                 live: bool = True):
         node = NodeWrapper(uid=uid,
                            geom=geom,
-                           live=live)
-        if node in self:
-            if node.geom == self.nodes[node.uid]['payload'].geom:
-                logger.debug(f'Proposed new node {node.uid} would overlay a node that already exists '
-                             f'for the same location. Skipping.')
-                return None
-            node.bump_node_uid(self)
-            logger.debug(f'A node of the same name already exists in the graph, '
-                         f'adding this node as {node.uid} instead.')
-        nx.MultiGraph.add_node(self,
-                               node.uid,
-                               geom_wkb=node.,
-                               live=node.live,
-                               **attr)
+                           live=live,
+                           cityseer=self)
+        node.instance()
 
     def add_edge(self, u_for_edge, v_for_edge, key=None, **attr):
         """Overrides add_edge with steps enforcing node semantics"""
@@ -400,7 +348,7 @@ class CityseerGraph(nx.MultiGraph):
         osm_network_data = json.loads(osm_json)
         for e in osm_network_data['elements']:
             if e['type'] == 'node':
-                self.add_cityseer_node(
+                self.add_node(
                     uid=e['id'],
                     geom=geometry.Point(e['lon'], e['lat']),
                     live=True)

@@ -21,9 +21,10 @@ setup(
     install_requires=[
         'matplotlib',
         'networkx>=2.4',
-        'numba>=0.53',
-        'numpy',
-        'shapely>=1.8.a2',
+        'numba>=0.54',
+        'numpy==1.20',
+        'pytest',
+        'shapely>=1.8a3',
         'sklearn',
         'tqdm',
         'utm'

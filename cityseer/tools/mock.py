@@ -113,11 +113,11 @@ def mock_graph(wgs84_coords: bool = False) -> nx.MultiGraph:
         # add a parallel edge
         (56, {'x': 701300, 'y': 5719110})
     ]
-    multi_graph = graphs.CityseerGraph()
-    for node in nodes:
-        uid = str(node[0])
-        geom = geometry.Point(node[1]['x'], node[1]['y'])
-        multi_graph.add_cityseer_node(uid, geom=geom)
+    multi_graph = nx.MultiGraph()
+    for n in nodes:
+        geom = geometry.Point(n[1]['x'], n[1]['y'])
+        node = graphs.CityseerNode(geom)
+        multi_graph.add_node(node.uid, payload=node)
     edges = [
         (0, 1),
         (0, 16),
@@ -203,8 +203,9 @@ def mock_graph(wgs84_coords: bool = False) -> nx.MultiGraph:
         (45, 56),
         (30, 56)
     ]
-    for edge in edges:
-        multi_graph.add_cityseer_edge(str(edge[0]), str(edge[1]))
+    for e in edges:
+        edge = graphs.CityseerEdge(start_node=multi_graph.nodes[])
+        multi_graph.add_edge(str(edge[0]), str(edge[1]))
 
     if wgs84_coords:
         multi_graph.convert_WGS_to_UTM()
